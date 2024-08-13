@@ -34,11 +34,11 @@
 #include "userial_vendor.h"
 
 #ifndef BTVND_DBG
-#define BTVND_DBG FALSE
+#define BTVND_DBG TRUE
 #endif
 
 #if (BTVND_DBG == TRUE)
-#define BTVNDDBG(param, ...) {ALOGD(param, ## __VA_ARGS__);}
+#define BTVNDDBG(param, ...) {ALOGI(param, ## __VA_ARGS__);} //ALOGD
 #else
 #define BTVNDDBG(param, ...) {}
 #endif
@@ -127,7 +127,7 @@ static int init(const bt_vendor_callbacks_t* p_cb, unsigned char *local_bdaddr)
     return 0;
 }
 
-
+extern void ms_delay (uint32_t timeout);
 /** Requested operations */
 static int op(bt_vendor_opcode_t opcode, void *param)
 {
@@ -143,8 +143,20 @@ static int op(bt_vendor_opcode_t opcode, void *param)
                 upio_set_bluetooth_power(UPIO_BT_POWER_OFF);
                 if (*state == BT_VND_PWR_ON)
                 {
+#ifdef USE_BLUETOOTH_CYW89570_RUNTIME_RAM
+                    /* For the CYW89570, it needs to open UART port to make BT_CTS pin pulled low before turning on BT in orde to enter into auto baud rate download mode. */
+                    int fd;
+                    fd = userial_vendor_open((tUSERIAL_CFG *) &userial_init_cfg);
+                    if (fd != -1)
+                    {
+                        ALOGW("NOTE: BT_VND_PWR_ON now forces power-off first");
+                        upio_set_bluetooth_power(UPIO_BT_POWER_ON);
+                    }
+#else
                     ALOGW("NOTE: BT_VND_PWR_ON now forces power-off first");
                     upio_set_bluetooth_power(UPIO_BT_POWER_ON);
+#endif
+                ms_delay(200);
                 } else {
                     /* Make sure wakelock is released */
                     hw_lpm_set_wake_state(false);
@@ -172,7 +184,12 @@ static int op(bt_vendor_opcode_t opcode, void *param)
             {
                 int (*fd_array)[] = (int (*)[]) param;
                 int fd, idx;
+                ms_delay(20);
+#ifdef USE_BLUETOOTH_CYW89570_RUNTIME_RAM
+                fd = userial_vendor_get_fd();
+#else
                 fd = userial_vendor_open((tUSERIAL_CFG *) &userial_init_cfg);
+#endif
                 if (fd != -1)
                 {
                     for (idx=0; idx < CH_MAX; idx++)

@@ -56,11 +56,12 @@
 ******************************************************************************/
 
 #ifndef BTHW_DBG
-#define BTHW_DBG FALSE
+#define BTHW_DBG TRUE
 #endif
 
 #if (BTHW_DBG == TRUE)
-#define BTHWDBG(param, ...) {ALOGD(param, ## __VA_ARGS__);}
+//#define BTHWDBG(param, ...) {ALOGD(param, ## __VA_ARGS__);}
+#define BTHWDBG(param, ...) {ALOGI(param, ## __VA_ARGS__);}
 #else
 #define BTHWDBG(param, ...) {}
 #endif
@@ -84,6 +85,7 @@
 #define HCI_VSC_WRITE_I2SPCM_INTERFACE_PARAM    0xFC6D
 #define HCI_VSC_ENABLE_WBS                      0xFC7E
 #define HCI_VSC_LAUNCH_RAM                      0xFC4E
+#define HCI_VSC_ENTER_DOWNLOAD_MODE             0xFFED
 #define HCI_READ_LOCAL_BDADDR                   0x1009
 
 #define HCI_EVT_CMD_CMPL_STATUS_RET_BYTE        5
@@ -91,6 +93,7 @@
 #define HCI_EVT_CMD_CMPL_LOCAL_BDADDR_ARRAY     6
 #define HCI_EVT_CMD_CMPL_OPCODE                 3
 #define LPM_CMD_PARAM_SIZE                      12
+#define ENTER_DOWNLOAD_MODE_CMD_LEN             20
 #define UPDATE_BAUDRATE_CMD_PARAM_SIZE          6
 #define HCI_CMD_PREAMBLE_SIZE                   3
 #define HCD_REC_PAYLOAD_LEN_BYTE                2
@@ -161,13 +164,15 @@ typedef struct {
     const uint32_t delay_time;
 } fw_settlement_entry_t;
 
-
 /******************************************************************************
 **  Externs
 ******************************************************************************/
 
 void hw_config_cback(void *p_evt_buf);
 extern uint8_t vnd_local_bd_addr[BD_ADDR_LEN];
+#if (SCO_CFG_INCLUDED == TRUE)
+void hw_sco_config(void);
+#endif
 
 
 /******************************************************************************
@@ -228,6 +233,14 @@ static uint8_t bt_sco_i2spcm_param[SCO_I2SPCM_PARAM_SIZE] =
     SCO_I2SPCM_IF_CLOCK_RATE
 };
 
+static uint8_t bt_enter_download_mode[ENTER_DOWNLOAD_MODE_CMD_LEN] = {
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xED, 0xFF, 0x01, 0x00
+};
+
 /*
  * The look-up table of recommended firmware settlement delay (milliseconds) on
  * known chipsets.
@@ -235,7 +248,7 @@ static uint8_t bt_sco_i2spcm_param[SCO_I2SPCM_PARAM_SIZE] =
 static const fw_settlement_entry_t fw_settlement_table[] = {
     {"BCM43241", 200},
     {"BCM43341", 100},
-    {(const char *) NULL, 100}  // Giving the generic fw settlement delay setting.
+    {(const char *) NULL, 350}  // Giving the generic fw settlement delay setting.
 };
 
 
@@ -635,6 +648,8 @@ void hw_config_cback(void *p_mem)
     p = (uint8_t *)(p_evt_buf + 1) + HCI_EVT_CMD_CMPL_OPCODE;
     STREAM_TO_UINT16(opcode,p);
 
+    BTHWDBG("hw_cfg_cb.state::%d, hw_config_cback [%04x]",hw_cfg_cb.state, opcode);
+
     /* Ask a new buffer big enough to hold any HCI commands sent in here */
     if ((status == 0) && bt_vendor_cbacks)
         p_buf = (HC_BT_HDR *) bt_vendor_cbacks->alloc(BT_HC_HDR_SIZE + \
@@ -690,6 +705,30 @@ void hw_config_cback(void *p_mem)
                             LOCAL_NAME_BUFFER_LEN-1);
                 }
 #endif
+#ifdef USE_BLUETOOTH_CYW89570_RUNTIME_RAM
+                else if (((p_name = strstr(p_tmp, "CYW55560")) != NULL) ||
+                    ((p_name = strstr(p_tmp, "CYW89570")) != NULL))
+                {
+                    ALOGW("bypass FW download for %s during runtime", p_name);
+                    strncpy(hw_cfg_cb.local_chip_name, p_name, \
+                            LOCAL_NAME_BUFFER_LEN-1);
+
+                    hw_cfg_cb.f_set_baud_2 = TRUE;
+
+                    p_buf->len = HCI_CMD_PREAMBLE_SIZE;
+                    UINT16_TO_STREAM(p, HCI_RESET);
+                    *p = 0; /* parameter length */
+                    hw_cfg_cb.state = HW_CFG_START;
+
+                    is_proceeding = bt_vendor_cbacks->xmit_cb(HCI_RESET, p_buf, hw_config_cback);
+                    break;
+                }
+#endif
+                else if ((p_name = strstr(p_name, "CYW")) != NULL)
+                {
+                    strncpy(hw_cfg_cb.local_chip_name, p_name, \
+                            LOCAL_NAME_BUFFER_LEN-1);
+                }
                 else
                 {
                     strncpy(hw_cfg_cb.local_chip_name, "UNKNOWN", \
@@ -743,12 +782,14 @@ void hw_config_cback(void *p_mem)
                 p_buf->len = read(hw_cfg_cb.fw_fd, p, HCI_CMD_PREAMBLE_SIZE);
                 if (p_buf->len > 0)
                 {
+#ifndef USE_BLUETOOTH_CYW89570_RUNTIME_RAM
                     if ((p_buf->len < HCI_CMD_PREAMBLE_SIZE) || \
                         (opcode == HCI_VSC_LAUNCH_RAM))
                     {
                         ALOGW("firmware patch file might be altered!");
                     }
                     else
+#endif
                     {
                         p_buf->len += read(hw_cfg_cb.fw_fd, \
                                            p+HCI_CMD_PREAMBLE_SIZE,\
@@ -756,6 +797,7 @@ void hw_config_cback(void *p_mem)
                         STREAM_TO_UINT16(opcode,p);
                         is_proceeding = bt_vendor_cbacks->xmit_cb(opcode, \
                                                 p_buf, hw_config_cback);
+                        BTHWDBG("Writing %d bytes from patchram", p_buf->len);
                         break;
                     }
                 }
@@ -839,9 +881,14 @@ void hw_config_cback(void *p_mem)
 #endif
                 /* fall through intentionally */
             case HW_CFG_SET_BD_ADDR:
+#if (INIT_PCM_AFTER_FW_CONFIG == TRUE) && (SCO_CFG_INCLUDED == TRUE)
+                hw_sco_config();
+                bt_vendor_cbacks->dealloc(p_buf);
+#else
                 ALOGI("vendor lib fwcfg completed");
                 bt_vendor_cbacks->dealloc(p_buf);
                 bt_vendor_cbacks->fwcfg_cb(BT_VND_OP_RESULT_SUCCESS);
+#endif
 
                 hw_cfg_cb.state = 0;
 
@@ -873,9 +920,15 @@ void hw_config_cback(void *p_mem)
                         *(p_tmp+2), *(p_tmp+1), *p_tmp);
                 }
 
+#if (INIT_PCM_AFTER_FW_CONFIG == TRUE) && (SCO_CFG_INCLUDED == TRUE)
+                hw_sco_config();
+                bt_vendor_cbacks->dealloc(p_buf);
+#else
+
                 ALOGI("vendor lib fwcfg completed");
                 bt_vendor_cbacks->dealloc(p_buf);
                 bt_vendor_cbacks->fwcfg_cb(BT_VND_OP_RESULT_SUCCESS);
+#endif
 
                 hw_cfg_cb.state = 0;
 
@@ -983,8 +1036,9 @@ static void hw_sco_i2spcm_cfg_cback(void *p_mem)
 
     if (status == BT_VND_OP_RESULT_SUCCESS)
     {
-        if ((opcode == HCI_VSC_WRITE_I2SPCM_INTERFACE_PARAM) &&
-            (SCO_INTERFACE_PCM == sco_bus_interface))
+        //if ((opcode == HCI_VSC_WRITE_I2SPCM_INTERFACE_PARAM) &&
+        //    (SCO_INTERFACE_PCM == sco_bus_interface))
+        if (opcode == HCI_VSC_WRITE_I2SPCM_INTERFACE_PARAM)
         {
             uint8_t ret = FALSE;
 
@@ -1000,7 +1054,7 @@ static void hw_sco_i2spcm_cfg_cback(void *p_mem)
                 p_buf->len = HCI_CMD_PREAMBLE_SIZE + SCO_PCM_PARAM_SIZE;
                 p = (uint8_t *)(p_buf + 1);
 
-                /* do we need this VSC for I2S??? */
+                /* do we need this VSC for I2S as well */
                 UINT16_TO_STREAM(p, HCI_VSC_WRITE_SCO_PCM_INT_PARAM);
                 *p++ = SCO_PCM_PARAM_SIZE;
                 memcpy(p, &bt_sco_param, SCO_PCM_PARAM_SIZE);
@@ -1017,8 +1071,9 @@ static void hw_sco_i2spcm_cfg_cback(void *p_mem)
             }
             status = BT_VND_OP_RESULT_FAIL;
         }
-        else if ((opcode == HCI_VSC_WRITE_SCO_PCM_INT_PARAM) &&
-                 (SCO_INTERFACE_PCM == sco_bus_interface))
+        //else if ((opcode == HCI_VSC_WRITE_SCO_PCM_INT_PARAM) &&
+                 //(SCO_INTERFACE_PCM == sco_bus_interface))
+        else if (opcode == HCI_VSC_WRITE_SCO_PCM_INT_PARAM)
         {
             uint8_t ret = FALSE;
 
@@ -1058,7 +1113,11 @@ static void hw_sco_i2spcm_cfg_cback(void *p_mem)
     ALOGI("sco I2S/PCM config result %d [0-Success, 1-Fail]", status);
     if (bt_vendor_cbacks)
     {
+#if (INIT_PCM_AFTER_FW_CONFIG == TRUE)
+        bt_vendor_cbacks->fwcfg_cb(status);
+#else
         bt_vendor_cbacks->audio_state_cb(status);
+#endif
     }
 }
 
@@ -1118,13 +1177,17 @@ void hw_config_start(void)
     hw_cfg_cb.state = 0;
     hw_cfg_cb.fw_fd = -1;
     hw_cfg_cb.f_set_baud_2 = FALSE;
+#ifdef USE_BLUETOOTH_CYW89570_RUNTIME_RAM
+    bool find = FALSE;
+    char p_name[256] = {'C','Y','W','5','5','5','6','0',0};
+#endif
 
     /* Start from sending HCI_RESET */
 
     if (bt_vendor_cbacks)
     {
         p_buf = (HC_BT_HDR *) bt_vendor_cbacks->alloc(BT_HC_HDR_SIZE + \
-                                                       HCI_CMD_PREAMBLE_SIZE);
+                                                       HCI_CMD_PREAMBLE_SIZE + HCI_CMD_MAX_LEN);
     }
 
     if (p_buf)
@@ -1132,6 +1195,37 @@ void hw_config_start(void)
         p_buf->event = MSG_STACK_TO_HC_HCI_CMD;
         p_buf->offset = 0;
         p_buf->layer_specific = 0;
+
+#ifdef USE_BLUETOOTH_CYW89570_RUNTIME_RAM
+        if (hw_config_findpatch(p_name) == TRUE)
+            find = TRUE;
+        if (find == FALSE)
+        {
+            memset(p_name, 0, sizeof(p_name));
+            memcpy(p_name, "CYW89570", sizeof("CYW89570"));
+            if (hw_config_findpatch(p_name) == TRUE)
+                find = TRUE;
+        }
+        if ((find == TRUE) && ((hw_cfg_cb.fw_fd = open(p_name, O_RDONLY)) != -1))
+        {
+            ALOGI("bt vendor lib: set UART baud %i", UART_TARGET_BAUD_RATE);
+            userial_vendor_set_baud(line_speed_to_userial_baud(UART_TARGET_BAUD_RATE));
+            ms_delay(10);
+
+            p_buf->len = HCI_CMD_PREAMBLE_SIZE + ENTER_DOWNLOAD_MODE_CMD_LEN;
+
+            p = (uint8_t *) (p_buf + 1);
+            UINT16_TO_STREAM(p, HCI_VSC_ENTER_DOWNLOAD_MODE);
+            *p++ = ENTER_DOWNLOAD_MODE_CMD_LEN; /* parameter length */
+            memcpy(p, &bt_enter_download_mode, ENTER_DOWNLOAD_MODE_CMD_LEN);
+
+            hw_cfg_cb.state = HW_CFG_DL_MINIDRIVER;
+
+            bt_vendor_cbacks->xmit_cb(HCI_VSC_ENTER_DOWNLOAD_MODE, p_buf, hw_config_cback);
+        }
+        else
+#endif
+        {
         p_buf->len = HCI_CMD_PREAMBLE_SIZE;
 
         p = (uint8_t *) (p_buf + 1);
@@ -1141,6 +1235,7 @@ void hw_config_start(void)
         hw_cfg_cb.state = HW_CFG_START;
 
         bt_vendor_cbacks->xmit_cb(HCI_RESET, p_buf, hw_config_cback);
+    }
     }
     else
     {
@@ -1274,6 +1369,9 @@ void hw_sco_config(void)
 
         /* set nbs clock rate as the value in SCO_I2SPCM_IF_CLOCK_RATE field */
         sco_bus_clock_rate = bt_sco_i2spcm_param[3];
+
+        /* sync up clock mode setting */
+        bt_sco_param[4] = bt_sco_i2spcm_param[1];
     }
     else
     {
@@ -1305,8 +1403,12 @@ void hw_sco_config(void)
      *  immediately with SCO_CODEC_CVSD by default.
      */
 
-    if (SCO_INTERFACE_I2S == sco_bus_interface) {
-        hw_sco_i2spcm_config(SCO_CODEC_CVSD);
+#if (INIT_PCM_AFTER_FW_CONFIG == FALSE)
+    if (SCO_INTERFACE_I2S == sco_bus_interface)
+#endif
+    {
+//	hw_sco_i2spcm_config(SCO_CODEC_MSBC);
+	hw_sco_i2spcm_config(SCO_CODEC_CVSD);
     }
 
     if (bt_vendor_cbacks)
@@ -1389,7 +1491,12 @@ static void hw_sco_i2spcm_config(uint16_t codec)
             return;
     }
 
+#if (INIT_PCM_AFTER_FW_CONFIG == TRUE)
+    ALOGE("vendor lib fwcfg failed to init PCM");
+    bt_vendor_cbacks->fwcfg_cb(BT_VND_OP_RESULT_FAIL);
+#else
     bt_vendor_cbacks->audio_state_cb(BT_VND_OP_RESULT_FAIL);
+#endif
 }
 
 /*******************************************************************************

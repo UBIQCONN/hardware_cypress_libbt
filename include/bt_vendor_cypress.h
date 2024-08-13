@@ -410,6 +410,16 @@
 #define HW_END_WITH_HCI_RESET    TRUE
 #endif
 
+/* INIT_PCM_AFTER_FW_CONFIG
+
+    Initialize PCM configurations after firmware patch is downloaded.
+    Since Android O, the stack no longer sends vendor specific commands for
+    PCM/I2S configuration before establishing or after terminating a voice link.
+*/
+#ifndef INIT_PCM_AFTER_FW_CONFIG
+#define INIT_PCM_AFTER_FW_CONFIG    TRUE
+#endif
+
 /******************************************************************************
 **  Extern variables and functions
 ******************************************************************************/

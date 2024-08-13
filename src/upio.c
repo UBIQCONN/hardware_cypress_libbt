@@ -101,6 +101,11 @@ static int rfkill_id = -1;
 static int bt_emul_enable = 0;
 static char *rfkill_state_path = NULL;
 
+#ifdef CYW9RPI55573PCEVK2
+static int RPI_bt_regon_initialized = -1;
+static char *RPI_bt_regon_path = NULL;
+#endif
+
 /******************************************************************************
 **  Static functions
 ******************************************************************************/
@@ -180,6 +185,35 @@ static int init_rfkill()
     asprintf(&rfkill_state_path, "/sys/class/rfkill/rfkill%d/state", rfkill_id);
     return 0;
 }
+
+#ifdef CYW9RPI55573PCEVK2
+static int init_RPI_bt_regon()
+{
+    char path[64];
+    char path2[64];
+    char buf[16];
+    char buffer = '0';
+    int fd, sz;
+
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", BT_REG_ON_GPIO);
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+    {
+        ALOGE("init_RPI_bt_regon : open(%s) failed: %s (%d) after initialized\n", \
+             path, strerror(errno), errno);
+        return -1;
+    }
+    else
+    {
+        RPI_bt_regon_initialized = 1;
+        close(fd);
+
+        asprintf(&RPI_bt_regon_path, "/sys/class/gpio/gpio%d/value", BT_REG_ON_GPIO);
+        ALOGE("init_RPI_bt_regon done %s\n",RPI_bt_regon_path);
+    }
+    return 0;
+}
+#endif
 
 /*****************************************************************************
 **   LPM Static Functions
@@ -317,6 +351,31 @@ int upio_set_bluetooth_power(uint8_t on)
         return 0;
     }
 
+#ifdef CYW9RPI55573PCEVK2
+    if (RPI_bt_regon_initialized == -1)
+    {
+        if (init_RPI_bt_regon())
+            return ret;
+    }
+
+
+    fd = open(RPI_bt_regon_path, O_WRONLY);
+    if (fd < 0)
+    {
+        ALOGE("set_bluetooth_power : open(%s) for write failed: %s (%d)",
+        RPI_bt_regon_path, strerror(errno), errno);
+        return -1;
+    }
+    sz = write(fd, &buffer, 1);
+    if (sz < 0) {
+        ALOGE("Failed to change GPIO state");
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+    return ret;
+#else
     /* check if we have rfkill interface */
     if (is_rfkill_disabled())
         return 0;
@@ -349,6 +408,7 @@ int upio_set_bluetooth_power(uint8_t on)
         close(fd);
 
     return ret;
+#endif
 }
 
 

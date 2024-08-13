@@ -172,5 +172,16 @@ void userial_vendor_set_baud(uint8_t userial_baud);
 *******************************************************************************/
 void userial_vendor_ioctl(userial_vendor_ioctl_op_t op, void *p_data);
 
+/*******************************************************************************
+**
+** Function        userial_vendor_get_fd
+**
+** Description     Get the file descriptor
+**
+** Returns         device fd
+**
+*******************************************************************************/
+int userial_vendor_get_fd(void);
+
 #endif /* USERIAL_VENDOR_H */
 

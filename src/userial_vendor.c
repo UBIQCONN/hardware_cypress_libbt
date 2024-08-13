@@ -371,3 +371,17 @@ int userial_set_port(char *p_conf_name, char *p_conf_value, int param)
     return 0;
 }
 
+/*******************************************************************************
+**
+** Function        userial_vendor_get_fd
+**
+** Description     Get the file descriptor
+**
+** Returns         device fd
+**
+*******************************************************************************/
+int userial_vendor_get_fd(void)
+{
+    return vnd_userial.fd;
+}
+
